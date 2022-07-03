@@ -18,7 +18,18 @@ from . import read, cop, process
 
 DATA_DIR = f'{pathlib.Path(os.path.abspath("")).parents[0]}/Data Files'
 
-def import_ecobee_data(location, size, fuel_type, DATA_DIR=None): #TODO
+def import_ecobee_data(location, size, fuel_type, DATA_DIR=None):
+    """
+    Function to import all data from precomputed df_lists. Run read.main() to process these and add save them.
+    Args:
+        location:
+        size:
+        fuel_type:
+        DATA_DIR:
+
+    Returns:
+
+    """
     if DATA_DIR is None:
         DATA_DIR = f'{pathlib.Path(os.path.abspath("")).parents[0]}/Data Files'
     out_dict = {}
@@ -30,7 +41,19 @@ def import_ecobee_data(location, size, fuel_type, DATA_DIR=None): #TODO
 
     return out_dict
 
-def import_other_heat_data(source, location=None, normalize=True, daily=True, DATA_DIR=None): #TODO
+def import_other_heat_data(source, location=None, normalize=True, daily=True, DATA_DIR=None):
+    """
+    Imports other heat load data from existing literature used for comparisons.
+    Args:
+        source:
+        location:
+        normalize:
+        daily:
+        DATA_DIR:
+
+    Returns:
+
+    """
     if DATA_DIR is None:
         DATA_DIR = f'{pathlib.Path(os.path.abspath("")).parents[0]}/Data Files'
     if source == 'when2heat':
@@ -94,7 +117,15 @@ def import_other_heat_data(source, location=None, normalize=True, daily=True, DA
         else:
             return nrel
 
-def get_daily_peaks(grouped_df): #TODO
+def get_daily_peaks(grouped_df):
+    """
+    Groups the aggregated timeseries data into daily peak.
+    Args:
+        grouped_df:
+
+    Returns:
+
+    """
     if type(grouped_df) == dict:
         peaks = {
             key: df.loc[df.groupby(pd.Grouper(freq='D')).idxmax()] for key, df in
@@ -106,7 +137,21 @@ def get_daily_peaks(grouped_df): #TODO
         peaks = grouped_df.loc[grouped_df.groupby(pd.Grouper(freq='D')).idxmax()]
     return peaks
 
-def renewable_correlation(grouped_loc_df, resample_freq='15T', wind_thresh=6, solar_thresh=.125, demand_thresh=2): #TODO
+def renewable_correlation(grouped_loc_df, resample_freq='15T', wind_thresh=6, solar_thresh=.125, demand_thresh=2):
+    """
+    Calculates the correlation with renewable energy. Creates bins based on renewable energy resources (wind/solar).
+    Also calculates low_resource, high demand periods that can be plotted. These are defined by both renewable sources
+    being under wind_thresh and solar_thresh with a heating demand above demand_thresh.
+    Args:
+        grouped_loc_df: timeseries dataframe of each clustered region separated into a multi index of [time, location]
+        resample_freq: Period of time to average over
+        wind_thresh: Threshold for wind speed (m/s)
+        solar_thresh: Threshold for solar GHI (kW/m2)
+        demand_thresh: Threshold for normalized heating demand
+
+    Returns:
+
+    """
 
     grouped_loc_df_resample = grouped_loc_df.groupby(pd.Grouper(freq=resample_freq, level=-2)).mean()
 

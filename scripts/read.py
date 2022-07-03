@@ -7,7 +7,7 @@ import geopy.distance
 import datetime
 sys.path.append(f'{pathlib.Path(os.path.abspath("")).parents[0]}')
 
-DATA_DIR = f'{pathlib.Path(os.path.abspath("")).parents[1]}/Data Files'
+DATA_DIR = f'{pathlib.Path(os.path.abspath("")).parents[1]}/data'
 
 # User Packages
 try:
@@ -22,7 +22,7 @@ def get_counties():
     :return:
     """
 
-    DATA_DIR = f'{pathlib.Path(__file__).parents[2]}/Data Files'
+    DATA_DIR = f'{pathlib.Path(__file__).parents[2]}/data'
     meta_data = pd.read_csv(f'{DATA_DIR}/meta_data.csv', header=0)
     meta_data['County'] = ''
     geolocator = Nominatim(user_agent="Your_Name")
@@ -334,28 +334,33 @@ def import_load_data(year, location): #TODO
 
     return df_tot
 
+def main(location, data_dir, reduce_size, season, hp_only):
+    size = 'small' if reduce_size else 'large'
+    # Heat Pump Only
+    if hp_only:
+        df_list_hp = import_grouped_data(location, max_files=10000, hp_only=True, parallel=True, season=season, reduce_size=reduce_size)
+        df_list_hp = [x for x in df_list_hp if x is not None]
+        pickle.dump(df_list_hp, open(f'{DATA_DIR}/df_Lists/df_list_hp_{location}_{size}_{season}.sav', 'wb'))
+        df_list_hp = pickle.load(open(f'{DATA_DIR}/df_Lists/df_list_hp_{location}_{size}_{season}.sav', 'rb'))
+        grouped_df_hp = process.group_dfs(df_list_hp, size)
+        pickle.dump(grouped_df_hp, open(f'{DATA_DIR}/df_Lists/grouped_df_hp_{location}_{size}_{season}.sav', 'wb'))
+        grouped_loc_df_hp = process.group_dfs_by_location(df_list_hp, size)
+        pickle.dump(grouped_loc_df_hp, open(f'{DATA_DIR}/df_Lists/grouped_loc_df_hp_{location}_{size}_{season}.sav', 'wb'))
+    else:
+        # Gas Only
+        df_list_gas = import_grouped_data(location, max_files=10000, hp_only=False, parallel=False, reduce_size=reduce_size)
+        df_list_gas = [x for x in df_list_gas if x is not None]
+        pickle.dump(df_list_gas, open(f'{DATA_DIR}/df_Lists/df_list_gas_{location}_{size}.sav', 'wb'))
+        df_list_gas = pickle.load(open(f'{DATA_DIR}/df_Lists/df_list_gas_{location}_{size}.sav', 'rb'))
+        grouped_df_gas = process.group_dfs(df_list_gas, size)
+        pickle.dump(grouped_df_gas, open(f'{DATA_DIR}/df_Lists/grouped_df_gas_{location}_{size}.sav', 'wb'))
+        grouped_loc_df_gas = process.group_dfs_by_location(df_list_gas, size)
+        pickle.dump(grouped_loc_df_gas, open(f'{DATA_DIR}/df_Lists/grouped_loc_df_gas_{location}_{size}.sav', 'wb'))
+
 if __name__ == '__main__':
     location = 'NY'
-    DATA_DIR = f'{pathlib.Path(os.path.abspath("")).parents[1]}/Data Files'
+    data_dir = f'{pathlib.Path(os.path.abspath("")).parents[1]}/data'
     reduce_size = True
-    size = 'small' if reduce_size else 'large'
     season='winter'
-    # Heat Pump Only
-    # df_list_hp = import_grouped_data(location, max_files=10000, hp_only=True, parallel=True, season=season, reduce_size=reduce_size)
-    # df_list_hp = [x for x in df_list_hp if x is not None]
-    # pickle.dump(df_list_hp, open(f'{DATA_DIR}/DF Lists/df_list_hp_{location}_{size}_{season}.sav', 'wb'))
-    df_list_hp = pickle.load(open(f'{DATA_DIR}/DF Lists/df_list_hp_{location}_{size}_{season}.sav', 'rb'))
-    grouped_df_hp = process.group_dfs(df_list_hp, size)
-    # pickle.dump(grouped_df_hp, open(f'{DATA_DIR}/DF Lists/grouped_df_hp_{location}_{size}_{season}.sav', 'wb'))
-    grouped_loc_df_hp = process.group_dfs_by_location(df_list_hp, size)
-    # pickle.dump(grouped_loc_df_hp, open(f'{DATA_DIR}/DF Lists/grouped_loc_df_hp_{location}_{size}_{season}.sav', 'wb'))
-
-    # Gas Only
-    # df_list_gas = import_grouped_data(location, NUM_FILES=10000, HP_ONLY=False, parallel=False, size=size)
-    # df_list_gas = [x for x in df_list_gas if x is not None]
-    # pickle.dump(df_list_gas, open(f'{DATA_DIR}/DF Lists/df_list_gas_{location}_{size}.sav', 'wb'))
-    # df_list_gas = pickle.load(open(f'{DATA_DIR}/DF Lists/df_list_gas_{location}_{size}.sav', 'rb'))
-    # grouped_df_gas = process.group_dfs(df_list_gas, size)
-    # pickle.dump(grouped_df_gas, open(f'{DATA_DIR}/DF Lists/grouped_df_gas_{location}_{size}.sav', 'wb'))
-    # grouped_loc_df_gas = process.group_dfs_by_location(df_list_gas, size)
-    # pickle.dump(grouped_loc_df_gas, open(f'{DATA_DIR}/DF Lists/grouped_loc_df_gas_{location}_{size}.sav', 'wb'))
+    hp_only = False
+    main(location, data_dir, reduce_size, season, hp_only)
