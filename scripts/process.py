@@ -10,8 +10,19 @@ try:
 except Exception as e:
     from . import cop
 
+"""
+Module used for processing raw, individual thermostat files into dataframes that are useful for aggregate analysis.
+"""
 
-def get_effective_runtime(df, building_meta_data):
+def get_effective_runtime(df):
+
+    """
+    Converts multi-stage runtimes into single, effective runtime. We assume equal weighting for each stage's runtime
+    (i.e., each stage adds the same amount of power), but this can be converted into a weighted average if the first
+    stage adds more power than the second
+    :param df:
+    :return:
+    """
 
     if (df['compHeat2'] > 0).any():
         df['effectiveCompRun'] = df[['compHeat1', 'compHeat2']].mean(axis=1)
@@ -49,18 +60,26 @@ def get_effective_runtime(df, building_meta_data):
     return df
 
 def get_effective_power(df):
-
+    """
+    Converts runtime into power consumption. Contains support for testing scaling factors for converting between systems.
+    For example, if auxiliary heat were converted into a heat pump the power consumption could be reduced by some factor
+    in order to provide the same amount of heat. We term this factor "eta", but it is very difficult in practice to
+    approximate this scaling. Thus, this function currently has no affect on presented results.
+    :param df:
+    :return:
+    """
     # Get Estimated COP at each time step
     HSPF = 10
     df['cop'] = cop.calc_cop_v(df['T_ctrl_C'], df['T_out_C'], HSPF)
 
     if 'effectiveGasRun' in df.columns:
-        df['gasElectricalDemandAsHP'] = df['effectiveGasRun'] / df['cop']
+        df['gasElectricalDemandASHP'] = df['effectiveGasRun'] / df['cop']
         df['effectiveElectricPower'] = np.nan
         df['effectiveElectricPower_w/out_aux'] = np.nan
         df['effectiveHeat'] = df['effectiveGasRun']
     elif 'effectiveCompRun' in df.columns:
-        df['eta'] = cop.calc_cop(21.11, df['Design_Temp_C'][0]) * cop.calc_power(df['Design_Temp_C'][0], HSPF)
+        # df['eta'] = cop.calc_cop(21.11, df['Design_Temp_C'][0]) * cop.calc_power(df['Design_Temp_C'][0], HSPF) # Eta calculated based on design temps
+        df['eta'] = 1 # constant eta for testing
         df['effectiveCompPower'] = cop.calc_power_v(df['T_out_C'], HSPF) * df['effectiveCompRun']
         df['effectiveAuxPower'] = df['eta'] * df['effectiveAuxRun']
         df['effectiveCompHeat'] = df['effectiveCompPower'] * df['cop']
@@ -69,17 +88,17 @@ def get_effective_power(df):
         df['effectiveElectricPower'] = df['effectiveCompPower'] + df['effectiveAuxPower']
         df['effectiveElectricPowerNoAux'] = df['effectiveCompPower'] + df['effectiveAuxPower'] / df['cop']
 
-        # for n in [1, 2, 4, 6, 8, 10]:
-        #     df[f'effectiveElectricPower_n={n}'] = df['effectiveCompHeat'] + n*df['effectiveAuxHeat']
-        #     df[f'effectiveElectricPower_w/out_aux_n={n}'] = df['effectiveCompHeat'] + n * df[
-        #         'effectiveAuxHeat'] / df['COP']
-        #     df['gasElectricalDemandAsHP'] = np.nan
-        #     df[f'effectiveHPHeat_n={n}'] = df['effectiveCompHeat'] * df['COP'] + n*df['effectiveAuxHeat']
-
     return df
 
 
 def group_dfs(df_list, size='small'):
+    """
+    Aggregates a list of dfs into a single, timeseries dataframe. Normalizes the effectiveHeat by the average to get
+    normalized heating demand.
+    :param df_list:
+    :param size:
+    :return:
+    """
     df_list = [x for x in df_list if x is not None]
 
     if size == 'small':
@@ -101,6 +120,7 @@ def group_dfs(df_list, size='small'):
 
     grouped_df = grouped_df.groupby('DateTime').mean().compute()
 
+    # Normalize by average.
     grouped_df['effectiveElectricPowerNorm'] = grouped_df['effectiveElectricPower'] / np.mean(
         grouped_df['effectiveElectricPower'])
     grouped_df['effectiveHeatNorm'] = grouped_df['effectiveHeat']/np.mean(grouped_df['effectiveHeat'])
@@ -108,6 +128,14 @@ def group_dfs(df_list, size='small'):
     return grouped_df
 
 def group_dfs_by_location(df_list, size='small'):
+    """
+    Groups the dfs based on their nearest central location. Used to cluster individual thermostats into regions so that
+    they can be compared to local weather conditions for renewable energy availability analysis.
+    :param df_list:
+    :param size:
+    :return:
+    """
+
     for df in df_list:
         df.index.rename('DateTime', inplace=True)
 
@@ -153,23 +181,5 @@ def group_dfs_by_location(df_list, size='small'):
 
     grouped_df['effectiveElectricPowerNorm'] = grouped_df['effectiveElectricPower'] / np.mean(
         grouped_df['effectiveElectricPower'])
-
-    return grouped_df
-
-def get_additional_energy(grouped_df):
-
-    grouped_df['additionalElectricPower'] = grouped_df['effectiveElectricPower'] - grouped_df['effectiveElectricPower_w/out_aux']
-    grouped_df['potentialElectricPowerPctDecrease'] = (-grouped_df['effectiveElectricPower']
-                                                        + grouped_df['effectiveElectricPower_w/out_aux']
-                                                        )/grouped_df['effectiveElectricPower']
-
-    return grouped_df
-
-
-def process_df_list(df_list):
-
-    grouped_df = group_dfs(df_list)
-
-    grouped_df = get_additional_energy(grouped_df)
 
     return grouped_df

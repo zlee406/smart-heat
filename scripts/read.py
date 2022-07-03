@@ -1,14 +1,13 @@
 import time, os, sys, pathlib, pickle
 import pandas as pd
 import numpy as np
-import dask.dataframe as dd
-import dask
-import zipfile
 import concurrent.futures
 from geopy.geocoders import Nominatim
 import geopy.distance
 import datetime
 sys.path.append(f'{pathlib.Path(os.path.abspath("")).parents[0]}')
+
+DATA_DIR = f'{pathlib.Path(os.path.abspath("")).parents[1]}/Data Files'
 
 # User Packages
 try:
@@ -17,6 +16,12 @@ except Exception as e:
     from . import process
 
 def get_counties():
+    """
+    Deprecated function used for adding county names to meta_data.csv. Originally used to match design day temperatures
+    to thermostat runtime data.
+    :return:
+    """
+
     DATA_DIR = f'{pathlib.Path(__file__).parents[2]}/Data Files'
     meta_data = pd.read_csv(f'{DATA_DIR}/meta_data.csv', header=0)
     meta_data['County'] = ''
@@ -56,46 +61,16 @@ def get_counties():
             print(f'{n}/{len(meta_data.index)}')
     return meta_data
 
-
-def import_grouped_data(location, NUM_FILES, HP_ONLY=False, parallel=False, size='small', season='winter'):
-    DATA_DIR = f'{pathlib.Path(os.path.abspath("")).parents[1]}/Data Files'
-    if location == 'NY':
-        DIR = f'{DATA_DIR}/2019 NY'
-    else:
-        DIR = f'{DATA_DIR}/2019 NE'
-
-
-    meta_data = pd.read_csv(f'{DATA_DIR}/meta_data.csv', header=0,
-                            usecols=['City', 'ProvinceState',
-                                    'Identifier', 'Floor Area [ft2]', 'Style', 'installedHeatStages',
-                                     'Number of Floors', 'Age of Home [years]', 'Number of Occupants',
-                                     'Has Electric', 'Has a Heat Pump', 'Auxilliary Heat Fuel Type'])
-    meta_data_design = pd.read_csv(f'{DATA_DIR}/meta_data_design_fixed.csv', header=0,
-                            usecols=['City', 'ProvinceState',
-                                     'Identifier', 'Floor Area [ft2]', 'Style', 'installedHeatStages',
-                                     'Number of Floors', 'Age of Home [years]', 'Number of Occupants',
-                                     'Has Electric', 'Has a Heat Pump', 'Auxilliary Heat Fuel Type', '99%heating'])
-    NUM_FILES = min(NUM_FILES, len(os.listdir(DIR)))
-    meta_data_list = list(meta_data['Identifier'])
-    filenames = [f'{DIR}/{file}' for file in os.listdir(DIR) if file.rstrip('.csv') in meta_data_list][:NUM_FILES]
-
-    if season == 'winter':
-        grouped_index = list(pd.date_range(start='01/01/2019', end='3/21/2019', freq='5T'))
-        grouped_index += (list(pd.date_range(start='11/21/2019', end='12/31/2019', freq='5T')))
-    elif season == 'summer':
-        grouped_index = list(pd.date_range(start='6/21/2019', end='9/21/2019', freq='5T'))
-    grouped_index = pd.DatetimeIndex(grouped_index)
-
-    start = time.time()
-
-    interp_cols = ['T_stp_cool', 'T_stp_heat', 'Humidity',
-                   'auxHeat1', 'auxHeat2', 'auxHeat3',
-                   'compHeat1', 'compHeat2', 'fan',
-                   'Thermostat_Temperature', 'T_out', 'RH_out']
-
-    # Get Weather Dfs
-    solar_dfs_orig = [pd.read_csv(f'{DATA_DIR}/Weather/NY Weather NSRDB/{f}', header=2) for f in
-                   os.listdir(f'{DATA_DIR}/Weather/NY Weather NSRDB')]
+def get_solar_dfs(location, index):
+    """
+    Reads in timeseries data from files contained in <DATA_DIR>/Weather/<location> and collates them into a list of
+    pandas dataframes. Files should be obtained from the NSRDB database for various points in your focus region.
+    :param location: Data directory for focus region
+    :param index: a pandas datetime index representing the timesteps desired
+    :return: solar_dfs_loc: A list of dataframes containing processed solar information.
+    """
+    solar_dfs_orig = [pd.read_csv(f'{DATA_DIR}/Weather/{location}/{f}', header=2) for f in
+                      os.listdir(f'{DATA_DIR}/Weather/{location}') if 'wind' not in f]
     solar_dfs = []
     for df in solar_dfs_orig:
         timestamp = []
@@ -110,31 +85,110 @@ def import_grouped_data(location, NUM_FILES, HP_ONLY=False, parallel=False, size
         df = df.rename(
             columns={'GHI': 'GHI_(kW/m2)'})
         solar_dfs.append(df)
-    solar_dfs = [solar_df.loc[solar_df.index.isin(grouped_index), :] for solar_df in solar_dfs]
 
-    solar_dfs_loc = [pd.read_csv(f'{DATA_DIR}/Weather/NY Weather NSRDB/{f}').loc[0, ['Latitude', 'Longitude']] for f
-                       in os.listdir(f'{DATA_DIR}/Weather/NY Weather NSRDB')]
+    solar_dfs_loc = [pd.read_csv(f'{DATA_DIR}/Weather/{location}/{f}').loc[0, ['Latitude', 'Longitude']] for f
+                     in os.listdir(f'{DATA_DIR}/Weather/{location}') if 'wind' not in f]
     solar_dfs_loc = [pd.to_numeric(w) for w in solar_dfs_loc]
+    return solar_dfs_loc, solar_dfs
 
-
-    wind_df = pd.read_csv(f'{DATA_DIR}/Weather/NY Weather Wind/NY_100m_wind_speed.csv', index_col=0, parse_dates=True)
-    wind_df = wind_df.loc[wind_df.index.isin(grouped_index), :]
+def get_wind_dfs(location, index):
+    """
+    Gets data from wind speed files contained in  <DATA_DIR>/Weather/<location> to be used for comparing heating demand
+    to 100m wind speed.
+    :param location: Data directory for focus region
+    :param index:  a pandas datetime index representing the timesteps desired
+    :return:
+    """
+    wind_df = pd.read_csv(f'{DATA_DIR}/Weather/{location}/wind_speed.csv', index_col=0, parse_dates=True)
+    wind_df = wind_df.loc[wind_df.index.isin(index), :]
 
     wind_df_loc = [wind_df.loc[:, ['latitude', 'longitude']].iloc[i] for i in range(len(wind_df.loc[:, ['latitude', 'longitude']].drop_duplicates()))]
 
-    def import_data(i, file, size):
+    return wind_df_loc, wind_df
+
+def create_wind_data(path_to_grib, location):
+    """
+    Creates a timeseries csv from the ERA5 grib files for 100m wind speed.
+    :param path_to_grib:
+    :param location: Location directory to save the wind_speed csv
+    :return:
+    """
+    wind_ds = xr.load_dataset(path_to_grib, engine='cfgrib')
+    wind_df = wind_ds.to_dataframe()
+    wind_df['100m_Wind_Speed_(m/s)'] = (wind_df['u100'] ** 2 + wind_df['v100'] ** 2) ** .5
+    wind_df.to_csv(f'{DATA_DIR}/Weather/{location}/wind_speed.csv')
+
+
+def import_grouped_data(location: str,
+                        max_files: int,
+                        hp_only: bool = False,
+                        parallel: bool = False,
+                        reduce_size: bool = True,
+                        season: str = 'winter'):
+    """
+    Imports data from individual files and combines them into a list of processed pandas dataframes
+    :param location: path to folder containing individual thermostat files
+    :param max_files: maximum number of files to process
+    :param hp_only: Whether to include heat pump or non-heat pump homes
+    :param parallel: Whether to run import in parallel
+    :param reduce_size: Whether to import the full data or reduce it to only important columns
+    :param season: ['winter', 'summer'] Season to analyze
+    :return:
+    """
+
+
+    DIR = f'{DATA_DIR}/{location}'
+
+    # Get metadata from data directory
+    meta_data = pd.read_csv(f'{DATA_DIR}/meta_data.csv', header=0,
+                            usecols=['City', 'ProvinceState',
+                                    'Identifier', 'Floor Area [ft2]', 'Style', 'installedHeatStages',
+                                     'Number of Floors', 'Age of Home [years]', 'Number of Occupants',
+                                     'Has Electric', 'Has a Heat Pump', 'Auxilliary Heat Fuel Type'])
+    max_files = min(max_files, len(os.listdir(DIR)))
+    meta_data_list = list(meta_data['Identifier'])
+    filenames = [f'{DIR}/{file}' for file in os.listdir(DIR) if file.rstrip('.csv') in meta_data_list][:max_files]
+
+    # Slice based on season
+    if season == 'winter':
+        grouped_index = list(pd.date_range(start='01/01/2019', end='3/21/2019', freq='5T'))
+        grouped_index += (list(pd.date_range(start='11/21/2019', end='12/31/2019', freq='5T')))
+    elif season == 'summer':
+        grouped_index = list(pd.date_range(start='6/21/2019', end='9/21/2019', freq='5T'))
+    grouped_index = pd.DatetimeIndex(grouped_index)
+
+    start = time.time()
+
+    # Columns containing numbers to interpolate
+    interp_cols = ['T_stp_cool', 'T_stp_heat', 'Humidity',
+                   'auxHeat1', 'auxHeat2', 'auxHeat3',
+                   'compHeat1', 'compHeat2', 'fan',
+                   'Thermostat_Temperature', 'T_out', 'RH_out']
+
+    # Get Weather Dfs
+    solar_dfs_loc, solar_dfs = get_solar_dfs(location, grouped_index)
+    wind_df_loc, wind_df = get_wind_dfs(location, grouped_index)
+
+
+    def import_data(i, file, reduce_size):
+        """
+        Helper function for parallelization. Imports files and adds them to a list of dataframes
+        :param i: file number
+        :param file: filename
+        :param reduce_size: Whether to conserve space by limiting data input
+        :return:
+        """
         # Time Count
-        if i % 50 == 0 and i != 0:
+        if i % 5 == 0 and i != 0:
             print(
-                f'\nProgress: {i}/{NUM_FILES} Time: {(time.time() - start) / 60:.1f} min/{(time.time() - start) / i * NUM_FILES / 60:.1f} min',
+                f'\nProgress: {i}/{max_files} Time: {(time.time() - start) / 60:.1f} min/{(time.time() - start) / i * max_files / 60:.1f} min',
                 end=" ")
         else:
             print('.', end="")
 
         # Get Metadata
-        key = file[-44:-4]
+        key = file[-44:-4] # parses out the identifier from filename
         building_meta_data = meta_data.loc[meta_data['Identifier'] == key]
-        building_meta_data_design = meta_data_design.loc[meta_data_design['Identifier'] == key]
 
         # Read In csv
         df_t = time.time()
@@ -151,12 +205,14 @@ def import_grouped_data(location, NUM_FILES, HP_ONLY=False, parallel=False, size
                                   'Thermostat_Temperature': np.float32, 'T_out': np.float32, 'RH_out': np.float32,
         }
                          ).set_index('DateTime')
-        # Get only winter days
+        # Get only <season> days
         df = df.loc[df.index.isin(grouped_index), :]
 
         # print(f'import df: {time.time() - df_t:.2f}')
         start_t = time.time()
-        if HP_ONLY:
+
+        # Only read in heat pump data if hp_only is true
+        if hp_only:
             if (df['compHeat2'] > 0).any():
                 READ_IN = True
             elif (df['compHeat1'] > 0).any():
@@ -172,24 +228,23 @@ def import_grouped_data(location, NUM_FILES, HP_ONLY=False, parallel=False, size
                 READ_IN = True
         # print(f'check if hp only: {time.time() - start_t:.2f} s')
 
+        # Do not read in data if it is empty
         if df.shape[0] == 0:
             READ_IN = False
 
         read_t = time.time()
         if READ_IN:
-
             # Fill some NaNs
             t0 = time.time()
             df[interp_cols] = df[interp_cols].interpolate(method='linear', limit=3)
             df['T_ctrl_C'] = (df['T_ctrl'] - 32)*5/9
             df['T_out_C'] = (df['T_out'] - 32)*5/9
-            df['Design_Temp'] = building_meta_data_design['99%heating'].astype(np.float32).iloc[0]
-            df['Design_Temp_C'] = (df['Design_Temp']-32)*5/9
-            # print(f'bfill: {time.time() - t0:.2f} s')
+
             # Get Runtime for multistage devices
             t1 = time.time()
-            df = process.get_effective_runtime(df, building_meta_data)
+            df = process.get_effective_runtime(df)
             # print(f'effective runtime: {time.time() - t1:.2f} s')
+
             # Estimate Effective Power Consumption
             t2 = time.time()
             df = process.get_effective_power(df)
@@ -214,14 +269,14 @@ def import_grouped_data(location, NUM_FILES, HP_ONLY=False, parallel=False, size
                 df['Lat'] = solar_dfs_loc[0]['Latitude']
                 df['Long'] = solar_dfs_loc[0]['Longitude']
 
-            # solar_df = solar_dfs[np.argmin(solar_distances)].resample('5T').interpolate()
-            # wind_df_to_merge = wind_df.loc[(wind_df['latitude'] == wind_df_loc[np.argmin(weather_distances)][0]) & (wind_df['longitude'] == wind_df_loc[np.argmin(weather_distances)][1])].resample('5T').interpolate()
-            #
-            # df = pd.merge(df, solar_df[['DHI', 'DNI', 'GHI_(kW/m2)','Wind Speed', 'Temperature']], left_index=True, right_index=True)
-            # df = pd.merge(df, wind_df_to_merge[['100m_Wind_Speed_(m/s)']], left_index=True, right_index=True)
-            #
-            # df['Nearest_Lat'] = solar_dfs_loc[np.argmin(solar_distances)]['Latitude'].astype(np.float16)
-            # df['Nearest_Long'] = solar_dfs_loc[np.argmin(solar_distances)]['Longitude'].astype(np.float16)
+            solar_df = solar_dfs[np.argmin(solar_distances)].resample('5T').interpolate()
+            wind_df_to_merge = wind_df.loc[(wind_df['latitude'] == wind_df_loc[np.argmin(weather_distances)][0]) & (wind_df['longitude'] == wind_df_loc[np.argmin(weather_distances)][1])].resample('5T').interpolate()
+
+            df = pd.merge(df, solar_df[['DHI', 'DNI', 'GHI_(kW/m2)','Wind Speed', 'Temperature']], left_index=True, right_index=True)
+            df = pd.merge(df, wind_df_to_merge[['100m_Wind_Speed_(m/s)']], left_index=True, right_index=True)
+
+            df['Nearest_Lat'] = solar_dfs_loc[np.argmin(solar_distances)]['Latitude'].astype(np.float16)
+            df['Nearest_Long'] = solar_dfs_loc[np.argmin(solar_distances)]['Longitude'].astype(np.float16)
 
             df['Identifier'] = key
 
@@ -240,7 +295,7 @@ def import_grouped_data(location, NUM_FILES, HP_ONLY=False, parallel=False, size
 
             df.index.rename('DateTime', inplace=True)
 
-            if size == 'small':
+            if reduce_size:
                 df = df[['HvacMode', 'Event', 'Schedule', 'T_stp_cool', 'T_stp_heat',
                          'Humidity', 'RH_out',
                          'T_ctrl_C', 'T_out_C',
@@ -253,20 +308,20 @@ def import_grouped_data(location, NUM_FILES, HP_ONLY=False, parallel=False, size
 
     if parallel:
         with concurrent.futures.ThreadPoolExecutor() as e:
-            df_list_parallel = [e.submit(import_data, i, f, size) for i, f in enumerate(filenames)]
+            df_list_parallel = [e.submit(import_data, i, f, reduce_size) for i, f in enumerate(filenames)]
         df_list = []
         for i in range(len(filenames)):
             df_list.append(df_list_parallel[i].result())
     else:
         df_list = []
         for i, file in enumerate(filenames):
-            df = import_data(i, file, size)
+            df = import_data(i, file, reduce_size)
             df_list.append(df)
 
 
     return df_list
 
-def import_load_data(year, location):
+def import_load_data(year, location): #TODO
     DATA_DIR = f'{pathlib.Path(__file__).parents[2]}/Data Files'
     df_list = []
     for file in os.listdir(f'{DATA_DIR}/NYISO Load'):
@@ -282,17 +337,18 @@ def import_load_data(year, location):
 if __name__ == '__main__':
     location = 'NY'
     DATA_DIR = f'{pathlib.Path(os.path.abspath("")).parents[1]}/Data Files'
-    size='small'
-    season='summer'
+    reduce_size = True
+    size = 'small' if reduce_size else 'large'
+    season='winter'
     # Heat Pump Only
-    df_list_hp = import_grouped_data(location, NUM_FILES=10000, HP_ONLY=True, parallel=True, season=season)
-    df_list_hp = [x for x in df_list_hp if x is not None]
-    pickle.dump(df_list_hp, open(f'{DATA_DIR}/DF Lists/df_list_hp_{location}_{size}_{season}.sav', 'wb'))
+    # df_list_hp = import_grouped_data(location, max_files=10000, hp_only=True, parallel=True, season=season, reduce_size=reduce_size)
+    # df_list_hp = [x for x in df_list_hp if x is not None]
+    # pickle.dump(df_list_hp, open(f'{DATA_DIR}/DF Lists/df_list_hp_{location}_{size}_{season}.sav', 'wb'))
     df_list_hp = pickle.load(open(f'{DATA_DIR}/DF Lists/df_list_hp_{location}_{size}_{season}.sav', 'rb'))
     grouped_df_hp = process.group_dfs(df_list_hp, size)
-    pickle.dump(grouped_df_hp, open(f'{DATA_DIR}/DF Lists/grouped_df_hp_{location}_{size}_{season}.sav', 'wb'))
+    # pickle.dump(grouped_df_hp, open(f'{DATA_DIR}/DF Lists/grouped_df_hp_{location}_{size}_{season}.sav', 'wb'))
     grouped_loc_df_hp = process.group_dfs_by_location(df_list_hp, size)
-    pickle.dump(grouped_loc_df_hp, open(f'{DATA_DIR}/DF Lists/grouped_loc_df_hp_{location}_{size}_{season}.sav', 'wb'))
+    # pickle.dump(grouped_loc_df_hp, open(f'{DATA_DIR}/DF Lists/grouped_loc_df_hp_{location}_{size}_{season}.sav', 'wb'))
 
     # Gas Only
     # df_list_gas = import_grouped_data(location, NUM_FILES=10000, HP_ONLY=False, parallel=False, size=size)
