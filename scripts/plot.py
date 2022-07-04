@@ -1,9 +1,6 @@
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import matplotlib
-import matplotlib.tri as mtri
-import matplotlib.ticker as mtick
-from matplotlib import cm
 import numpy as np
 import seaborn as sns
 import pandas as pd
